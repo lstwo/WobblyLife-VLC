@@ -34,4 +34,5 @@ You can configure the mod using the config file at `<Wobbly Life>/BepInEx/config
 ---
 
 Join my discord: https://discord.gg/kKjuKEaExb
+
 Join the Wobbly Life modding discord: https://discord.gg/aXznsYQReP

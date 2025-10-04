@@ -30,3 +30,8 @@ Then start your game.
 You can configure the mod using the config file at `<Wobbly Life>/BepInEx/config/wlVLC.cfg`, but i recommend installing one of these plugins so you can change it in-game:
 - https://github.com/sinai-dev/BepInExConfigManager
 - https://github.com/BepInEx/BepInEx.ConfigurationManager
+
+---
+
+Join my discord: https://discord.gg/kKjuKEaExb
+Join the Wobbly Life modding discord: https://discord.gg/aXznsYQReP

@@ -31,6 +31,18 @@ You can configure the mod using the config file at `<Wobbly Life>/BepInEx/config
 - https://github.com/sinai-dev/BepInExConfigManager
 - https://github.com/BepInEx/BepInEx.ConfigurationManager
 
+> [!NOTE]
+> You need to install the mono versions of the mods.
+
+To play a file locally from your computer change the FixedMediaPath to the path to the file so:
+`FixedMediaPath = path/to/file.type` or if using one of the config manager mods just the path. Also make sure to set UseNetworkUrl to false so:
+`UseNetworkUrl = false`
+
+To play something over http so from a url change the NetworkResourceURL to the url so:
+`NetworkResourceURL = http://example.com/file.mp4` or if using one of the config manager mods just the url. Also make sure to change UseNetworkUrl to true.
+
+If playing a live stream from rtmp or similar follow the steps for http but replace the http with rtmp. Also make sure to change OptimizeForLiveStream to true.
+
 ---
 
 Join my discord: https://discord.gg/kKjuKEaExb

@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using BepInEx;
@@ -19,16 +20,20 @@ public class Plugin : BaseUnityPlugin
     internal static ConfigEntry<bool> optimizeForLiveStream;
     internal static ConfigEntry<string> fixedMediaPath;
     internal static ConfigEntry<bool> useNetworkUrl;
+    internal static ConfigEntry<bool> enabled;
 
     private void Awake()
     {
         Logger = base.Logger;
         new Harmony(MyPluginInfo.PLUGIN_GUID).PatchAll(typeof(Plugin));
 
+        enabled = Config.Bind("Config", "Enabled", true);
         networkUrl = Config.Bind("Config", "NetworkResourceURL", "");
         useNetworkUrl = Config.Bind("Config", "UseNetworkUrl", false, "false = Use Media Path");
         optimizeForLiveStream = Config.Bind("Config", "OptimizeForLiveStream", false);
         fixedMediaPath = Config.Bind("Config", "FixedMediaPath", "");
+        
+        VLCWarmup.StartWarmup();
         
         Logger.LogInfo($"Plugin {MyPluginInfo.PLUGIN_GUID} is loaded!");
     }
@@ -61,6 +66,27 @@ public class Plugin : BaseUnityPlugin
         
         private void Awake()
         {
+            StartCoroutine(InitWhenReady());
+        }
+
+        private IEnumerator InitWhenReady()
+        {
+            while (!VLCWarmup.Ready)
+                yield return null;
+
+            SetupVLC(null, null);
+        }
+
+        private void SetupVLC(object _, EventArgs __)
+        {
+            Plugin.enabled.SettingChanged -= SetupVLC;
+
+            if (!Plugin.enabled.Value)
+            {
+                Plugin.enabled.SettingChanged += SetupVLC;
+                return;
+            }
+            
             var videoPlayer = GetComponentInChildren<VideoPlayer>();
             var wobblyCinemaPlayer = GetComponent<WobblyCinemaPlayer>();
             meshRenderer = videoPlayer.GetComponent<MeshRenderer>();
@@ -69,7 +95,7 @@ public class Plugin : BaseUnityPlugin
             Destroy(videoPlayer);
             
             Core.Initialize();
-            _libVLC = new LibVLC("--no-xlib");
+            _libVLC = VLCWarmup.SharedVLC;
             
             _mediaPlayer = new MediaPlayer(_libVLC);
             _mediaPlayer.SetVideoFormat("RV32", width, height, width * 4);
@@ -117,7 +143,7 @@ public class Plugin : BaseUnityPlugin
                     networkMedia.AddOption(":network-caching=50");
                     networkMedia.AddOption(":rtmp-live");
                 }
-                    
+                
                 _mediaPlayer.Play(networkMedia);
             }
             catch (Exception ex)
@@ -128,6 +154,11 @@ public class Plugin : BaseUnityPlugin
 
         private void Update()
         {
+            if (meshRenderer is null)
+            {
+                return;
+            }
+            
             lock (_mainThreadActions)
             {
                 while (_mainThreadActions.Count > 0)
@@ -179,5 +210,30 @@ public class Plugin : BaseUnityPlugin
                 });
             }
         }
+    }
+}
+
+public static class VLCWarmup
+{
+    public static LibVLC SharedVLC;
+    public static bool Ready;
+
+    public static void StartWarmup()
+    {
+        if (Ready) return;
+
+        System.Threading.ThreadPool.QueueUserWorkItem(_ =>
+        {
+            try
+            {
+                Core.Initialize();
+                SharedVLC = new LibVLC("--no-xlib");
+                Ready = true;
+            }
+            catch (Exception e)
+            {
+                Plugin.Logger.LogError("VLC warmup failed: " + e);
+            }
+        });
     }
 }

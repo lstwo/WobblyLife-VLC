@@ -22,7 +22,7 @@
         <PackageReference Include="LibVLCSharp" Version="3.9.4" />
         <PackageReference Include="UnityEngine.Modules" Version="2020.3.44" IncludeAssets="compile"/>
         <PackageReference Include="VideoLAN.LibVLC.Windows" Version="3.0.21" />
-        <PackageReference Include="WobblyLife.GameLibs" Version="0.9.6.5" />
+        <PackageReference Include="WobblyLife.GameLibs" Version="1.0.0.5" />
         
         <Reference Include="rtmpsharp">
             <HintPath>lib/rtmpsharp.dll</HintPath>

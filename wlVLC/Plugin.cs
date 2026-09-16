@@ -7,6 +7,7 @@ using BepInEx.Configuration;
 using BepInEx.Logging;
 using HarmonyLib;
 using LibVLCSharp.Shared;
+using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Video;
 
@@ -29,6 +30,8 @@ public class Plugin : BaseUnityPlugin
     internal static ConfigEntry<int> audioSampleRate;
     internal static ConfigEntry<float> audioOffsetMs;
     internal static ConfigEntry<bool> respectSoundRoom;
+    internal static ConfigEntry<int> videoWidth;
+    internal static ConfigEntry<int> videoHeight;
 
     private void Awake()
     {
@@ -38,11 +41,15 @@ public class Plugin : BaseUnityPlugin
         enabled = Config.Bind("Config", "Enabled", true);
         networkUrl = Config.Bind("Config", "NetworkResourceURL", "");
         useNetworkUrl = Config.Bind("Config", "UseNetworkUrl", false, "false = Use Media Path");
-        optimizeForLiveStream = Config.Bind("Config", "OptimizeForLiveStream", false);
+        optimizeForLiveStream = Config.Bind("Config", "OptimizeForLiveStream", false); 
         fixedMediaPath = Config.Bind("Config", "FixedMediaPath", "");
         loopVideo = Config.Bind("Config", "Loop", false,
             "Start the video over again when it reaches the end. Toggling this restarts playback, " +
             "and it has no effect on live streams.");
+        videoWidth = Config.Bind("Config", "Video Width", 1280,
+            "Resolution width for the buffer and texture, does not need to match the source video, disable and re enable to apply (e.g. 1920 for 1080p or 1280 for 720p)");
+        videoHeight = Config.Bind("Config", "Video Height", 720,
+            "Resolution height for the buffer and texture, does not need to match the source video, disable and re enable to apply (e.g. 1080 for 1080p or 720 for 720p)");
 
         spatialAudio = Config.Bind("Audio", "SpatialAudio", true,
             "Play the audio through the game's FMOD system, positioned at the cinema screen, " +
@@ -76,6 +83,10 @@ public class Plugin : BaseUnityPlugin
         Logger.LogInfo($"Plugin {MyPluginInfo.PLUGIN_GUID} is loaded!");
     }
 
+    [HarmonyPatch(typeof(WobblyCinemaClip), "Load")]
+    [HarmonyPrefix]
+    public static bool WobblyCinemaClip_Load_Prefix() => !enabled.Value || VLCWarmup.Failed;
+
     [HarmonyPatch(typeof(WobblyCinemaPlayer), "NetworkPost")]
     [HarmonyPostfix]
     public static void WobblyCinemaPlayer_NetworkPost_Postfix(ref WobblyCinemaPlayer __instance)
@@ -87,6 +98,10 @@ public class Plugin : BaseUnityPlugin
     public class VLCClient : MonoBehaviour
     {
         private MeshRenderer meshRenderer;
+        private VideoPlayer _videoPlayer;
+        private WobblyCinemaPlayer _cinemaPlayer;
+        private bool _warmedUp;
+        private bool _setupDone;
 
         public uint width = 1280;
         public uint height = 720;
@@ -114,6 +129,7 @@ public class Plugin : BaseUnityPlugin
 
         private void Awake()
         {
+            Plugin.enabled.SettingChanged += OnEnabledChanged;
             StartCoroutine(InitWhenReady());
         }
 
@@ -122,7 +138,9 @@ public class Plugin : BaseUnityPlugin
             while (!VLCWarmup.Ready)
                 yield return null;
 
-            SetupVLCNow();
+            _warmedUp = true;
+
+            if (Plugin.enabled.Value) SetupVLCNow();
         }
 
         private void EnqueueOnMainThread(Action action)
@@ -133,28 +151,34 @@ public class Plugin : BaseUnityPlugin
             }
         }
 
-        private void SetupVLC(object _, EventArgs __) => EnqueueOnMainThread(SetupVLCNow);
+        private void OnEnabledChanged(object _, EventArgs __) => EnqueueOnMainThread(() =>
+        {
+            if (!_warmedUp) return;
+
+            if (Plugin.enabled.Value) SetupVLCNow();
+            else TeardownVLCNow();
+        });
 
         private void SetupVLCNow()
         {
-            Plugin.enabled.SettingChanged -= SetupVLC;
+            if (_setupDone) return;
+            _setupDone = true;
 
-            if (!Plugin.enabled.Value)
-            {
-                Plugin.enabled.SettingChanged += SetupVLC;
-                return;
-            }
+            width = (uint)math.clamp(videoWidth.Value, 1, 3840);
+            height = (uint)math.clamp(videoHeight.Value, 1, 2160);
 
-            var videoPlayer = GetComponentInChildren<VideoPlayer>();
-            var wobblyCinemaPlayer = GetComponent<WobblyCinemaPlayer>();
+            var videoPlayer = _videoPlayer = GetComponentInChildren<VideoPlayer>();
+            var wobblyCinemaPlayer = _cinemaPlayer = GetComponent<WobblyCinemaPlayer>();
             meshRenderer = videoPlayer.GetComponent<MeshRenderer>();
 
-            // The VideoPlayer goes away, so keep the screen's transform for the 3D audio.
             _screenTransform = meshRenderer.transform;
-            _soundRoom = GetSoundRoom(wobblyCinemaPlayer);
+            _soundRoom = wobblyCinemaPlayer != null ? wobblyCinemaPlayer.soundRoom : default;
+
+            StopGameCinemaClip();
 
             //Destroy(wobblyCinemaPlayer);
-            Destroy(videoPlayer);
+            //Destroy(videoPlayer);
+            videoPlayer.enabled = false;
 
             Core.Initialize();
             _libVLC = VLCWarmup.SharedVLC;
@@ -182,6 +206,38 @@ public class Plugin : BaseUnityPlugin
             audioOffsetMs.SettingChanged += RefreshAudioOffset;
 
             RefreshMediaNow();
+        }
+
+        private void TeardownVLCNow(bool restoreGameCinema = true)
+        {
+            if (!_setupDone) return;
+            _setupDone = false;
+
+            networkUrl.SettingChanged -= RefreshMedia;
+            fixedMediaPath.SettingChanged -= RefreshMedia;
+            useNetworkUrl.SettingChanged -= RefreshMedia;
+            optimizeForLiveStream.SettingChanged -= RefreshMedia;
+            loopVideo.SettingChanged -= RefreshMedia;
+            spatialAudio.SettingChanged -= RebuildMediaPlayer;
+            audioSampleRate.SettingChanged -= RebuildMediaPlayer;
+            audioMinDistance.SettingChanged -= RefreshAudioDistances;
+            audioMaxDistance.SettingChanged -= RefreshAudioDistances;
+            audioOffsetMs.SettingChanged -= RefreshAudioOffset;
+
+            DestroyMediaPlayer();
+
+            if (meshRenderer != null) meshRenderer.material.mainTexture = _previousTexture;
+            if (_videoPlayer != null) _videoPlayer.enabled = true;
+
+            if (restoreGameCinema) RestartGameCinemaClip();
+
+            meshRenderer = null;
+            _isPlaying = false;
+
+            if (_videoTexture != null) Destroy(_videoTexture);
+            _videoTexture = null;
+
+            if (_videoBufferHandle.IsAllocated) _videoBufferHandle.Free();
         }
 
         private void CreateMediaPlayer()
@@ -229,21 +285,27 @@ public class Plugin : BaseUnityPlugin
         private void RefreshAudioOffset(object sender, EventArgs args) => EnqueueOnMainThread(() =>
             _audioBridge?.SetLatencyOffset(audioOffsetMs.Value));
 
-        private static SoundRoomData GetSoundRoom(WobblyCinemaPlayer cinemaPlayer)
+        private WobblyCinemaClip GetCurrentCinemaClip()
         {
-            if (cinemaPlayer == null) return default;
+            if (_cinemaPlayer == null) return null;
 
-            try
-            {
-                var field = AccessTools.Field(typeof(WobblyCinemaPlayer), "soundRoom");
-                if (field != null) return (SoundRoomData)field.GetValue(cinemaPlayer);
-            }
-            catch (Exception ex)
-            {
-                Logger.LogWarning("Could not read the cinema's sound room: " + ex.Message);
-            }
+            var clips = _cinemaPlayer.cinemaClips;
+            var index = _cinemaPlayer.currentClipIndex;
 
-            return default;
+            return clips != null && index < clips.Length ? clips[index] : null;
+        }
+
+        private void StopGameCinemaClip()
+        {
+            GetCurrentCinemaClip()?.Unload(_cinemaPlayer.videoPlayer, _cinemaPlayer.soundRoom);
+        }
+
+        private void RestartGameCinemaClip()
+        {
+            if (_cinemaPlayer == null || !_cinemaPlayer.bPlayingVideo) return;
+            if (_cinemaPlayer.visibleTrigger == null || !_cinemaPlayer.visibleTrigger.ContainsCameras()) return;
+
+            _cinemaPlayer.OnFirstCameraEntered_VisibleTrigger(null);
         }
 
         private void RefreshMedia(object sender, EventArgs args) => EnqueueOnMainThread(RefreshMediaNow);
@@ -288,7 +350,6 @@ public class Plugin : BaseUnityPlugin
 
         private static void ApplyLoopOption(Media media)
         {
-            // VLC counts repeats on top of the first play, so this is "effectively forever".
             if (loopVideo.Value) media.AddOption(":input-repeat=65535");
         }
 
@@ -367,22 +428,9 @@ public class Plugin : BaseUnityPlugin
 
         private void OnDestroy()
         {
-            networkUrl.SettingChanged -= RefreshMedia;
-            fixedMediaPath.SettingChanged -= RefreshMedia;
-            useNetworkUrl.SettingChanged -= RefreshMedia;
-            optimizeForLiveStream.SettingChanged -= RefreshMedia;
-            loopVideo.SettingChanged -= RefreshMedia;
-            spatialAudio.SettingChanged -= RebuildMediaPlayer;
-            audioSampleRate.SettingChanged -= RebuildMediaPlayer;
-            audioMinDistance.SettingChanged -= RefreshAudioDistances;
-            audioMaxDistance.SettingChanged -= RefreshAudioDistances;
-            audioOffsetMs.SettingChanged -= RefreshAudioOffset;
+            Plugin.enabled.SettingChanged -= OnEnabledChanged;
 
-            DestroyMediaPlayer();
-            _libVLC?.Dispose();
-
-            if (_videoBufferHandle.IsAllocated)
-                _videoBufferHandle.Free();
+            TeardownVLCNow(restoreGameCinema: false);
         }
 
         private IntPtr Lock(IntPtr opaque, IntPtr planes)
@@ -397,6 +445,9 @@ public class Plugin : BaseUnityPlugin
             {
                 _mainThreadActions.Enqueue(() =>
                 {
+                    // A frame can still be queued up when the mod gets switched off.
+                    if (_videoTexture == null) return;
+
                     var stride = (int)width * 4;
                     var flipped = new byte[_videoBuffer.Length];
 
@@ -460,6 +511,8 @@ public static class VLCWarmup
     public static LibVLC SharedVLC;
     public static bool Ready;
 
+    public static bool Failed;
+
     public static void StartWarmup()
     {
         if (Ready) return;
@@ -475,6 +528,7 @@ public static class VLCWarmup
             }
             catch (Exception e)
             {
+                Failed = true;
                 Plugin.Logger.LogError("VLC warmup failed: " + e);
             }
         });

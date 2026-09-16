@@ -8,9 +8,7 @@ You do NOT have to be the host (i think) as the mod is client-sided and only rep
 I cannot guarantee that it will work on linux.
 
 > [!NOTE]
-> This mod might be a bit buggy because of VLC, especially for live streams. To fix any issues try one of the following things:
-> 1. Go far enough away where the sound disappears to unload the chunk then go back.
-> 2. Restart the game.
+> You can change the resolution in the config though 1080p and higher may cause lag.
 
 ## Installation
 
